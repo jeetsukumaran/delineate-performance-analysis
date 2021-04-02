@@ -28,10 +28,10 @@ set -e -o pipefail
 echo "Job $JOBID completed on $(date --rfc-3339='seconds')"
 """
 speciation_rate_estimation_job_template="""\
-delineate-estimate rates {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -i -I --extra-info num_lineages:{num_lineages} --extra-info num_species:{num_species} --extra-info src_filepath:{tree_filepath} --extra-info true_speciation_completion_rate:{true_speciation_completion_rate} --extra-info batch_id:{batch_id} > {results_filepath}
+delineate-estimate-speciation-completion-rate.py {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -i -I -l num_lineages:{num_lineages} -l num_species:{num_species} -l src_filepath:{tree_filepath} -l true_speciation_completion_rate:{true_speciation_completion_rate} -l batch_id:{batch_id} > {results_filepath}
 """
 species_partition_estimation_job_template="""\
-delineate-estimate partitions {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -I {speciation_completion_rate} --extra-info num_lineages:{num_lineages} --extra-info num_species:{num_species} --extra-info src_filepath:{tree_filepath} --extra-info true_speciation_completion_rate:{true_speciation_completion_rate} --extra-info batch_id:{batch_id} > {delineate_results_filepath}
+delineate-estimate-species-partition.py {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -I {speciation_completion_rate} -l num_lineages:{num_lineages} -l num_species:{num_species} -l src_filepath:{tree_filepath} -l true_speciation_completion_rate:{true_speciation_completion_rate} -l batch_id:{batch_id} > {delineate_results_filepath}
 """
 species_partition_estimation_joint_probability_analysis_template="""\
 {post_analysis_performance_assessment_command} {run_config_filepath} {delineate_results_filepath} > {joint_performance_assessment_results_filepath}
@@ -95,7 +95,7 @@ def main():
             default="run",
             help="Name for this run.")
     parser.add_argument("-c", "--cluster",
-            choices=["flux", "kuhpc", "mesxuuyan"],
+            choices=["mesxuuyan", "flux", "kuhpc"],
             default=None,
             help="Scheduler type.")
     parser.add_argument("-n", "--num-replicates",
@@ -202,12 +202,12 @@ def main():
             true_sp_rates = rate_sweep_2
     if args.cluster is None:
         sys.exit("Need to specify cluster: '--cluster'")
+    elif args.cluster == "mesxuuyan":
+        preamble = mesxuuyan_preamble
     elif args.cluster == "flux":
         preamble = flux_preamble.format(mem=args.mem)
     elif args.cluster == "kuhpc":
         preamble = kuhpc_preamble
-    elif args.cluster == "mesxuuyan":
-        preamble = mesxuuyan_preamble
     else:
         raise ValueError(args.cluster)
     selected_condition = None
@@ -306,7 +306,7 @@ def main():
             # for species partition estimation
             species_leafset_constraints = None
             if args.test_type == speciation_completion_rate_test_type:
-                config["species_leafset_constraints"] = true_species_leafsets
+                config["species_leafsets"] = true_species_leafsets
                 true_constrained_lineage_leaf_labels = true_species_leafsets
                 true_unconstrained_lineage_leaf_labels = []
                 species_leafset_constraint_label_map = {}
@@ -424,7 +424,7 @@ def main():
             elif args.test_type in partition_test_types:
                 job_kwargs = dict(common_settings)
                 job_kwargs["underflow_protection"] = underflow_protection
-                job_kwargs["delineate_results_filepath"] = job_prefix + ".delimitation-results.json"
+                job_kwargs["delineate_results_filepath"] = job_prefix + ".partition-probs.json"
                 to_clean.append(job_kwargs["delineate_results_filepath"])
                 if args.specify_true_speciation_completion_rate:
                     job_kwargs["speciation_completion_rate"] = "--speciation-completion-rate {}".format(true_speciation_completion_rate)
