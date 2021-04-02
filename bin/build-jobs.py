@@ -28,10 +28,10 @@ set -e -o pipefail
 echo "Job $JOBID completed on $(date --rfc-3339='seconds')"
 """
 speciation_rate_estimation_job_template="""\
-delineate-estimate rates {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -i -I --extra-info num_lineages:{num_lineages} --extra-info num_species:{num_species} --extra-info src_filepath:{tree_filepath} --extra-info true_speciation_completion_rate:{true_speciation_completion_rate} --extra-info batch_id:{batch_id} > {results_filepath}
+delineate-estimate-speciation-rate.py -c {run_config_filepath} -t {tree_filepath} -i -I -l num_lineages:{num_lineages} -l num_species:{num_species} -l src_filepath:{tree_filepath} -l true_speciation_completion_rate:{true_speciation_completion_rate} batch_id:{batch_id} > {results_filepath}
 """
 species_partition_estimation_job_template="""\
-delineate-estimate partitions {underflow_protection} -c {run_config_filepath} -t {tree_filepath} -I {speciation_completion_rate} --extra-info num_lineages:{num_lineages} --extra-info num_species:{num_species} --extra-info src_filepath:{tree_filepath} --extra-info true_speciation_completion_rate:{true_speciation_completion_rate} --extra-info batch_id:{batch_id} > {delineate_results_filepath}
+delineate-estimate-species-partition.py -c {run_config_filepath} -t {tree_filepath} -I {speciation_completion_rate} -l num_lineages:{num_lineages} -l num_species:{num_species} -l src_filepath:{tree_filepath} -l true_speciation_completion_rate:{true_speciation_completion_rate} -l batch_id:{batch_id} > {delineate_results_filepath}
 """
 species_partition_estimation_joint_probability_analysis_template="""\
 {post_analysis_performance_assessment_command} {run_config_filepath} {delineate_results_filepath} > {joint_performance_assessment_results_filepath}
@@ -70,32 +70,17 @@ cd $PBS_O_WORKDIR
 # rate_sweep_2 = [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064]
 rate_sweep_2 = [0.001, 0.005, 0.01, 0.05, 0.10]
 
-test_types = [
-        'speciation-completion-rate',
-        'joint-partition-probabilities',
-        'marginal-partition-probabilities',
-        ]
-test_types_desc = ", ".join(["'{}'".format(tt) for tt in test_types])
-speciation_completion_rate_test_type = test_types[0]
-joint_partition_prob_test_type = test_types[1]
-marginal_partition_prob_test_type = test_types[2]
-partition_test_types = [joint_partition_prob_test_type, marginal_partition_prob_test_type]
-
 def main():
     """
     Main CLI handler.
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("test_type",
-            default="None",
-            action="store",
-            help="Type of test: {}.".format(test_types_desc))
     parser.add_argument("-t", "--title",
             default="run",
             help="Name for this run.")
     parser.add_argument("-c", "--cluster",
-            choices=["flux", "kuhpc", "mesxuuyan"],
+            choices=["mesxuuyan", "flux", "kuhpc"],
             default=None,
             help="Scheduler type.")
     parser.add_argument("-n", "--num-replicates",
@@ -105,10 +90,6 @@ def main():
     parser.add_argument("-z", "--random-seed",
             default=None,
             help="Random seed.")
-    parser.add_argument("-u", "--underflow-protection",
-            action="store_true",
-            default=False,
-            help="Try to protect against underflow by using special number handling classes (slow).",)
     parser.add_argument("--check-mode",
             action="store_true",
             dest="check_mode",
@@ -125,6 +106,22 @@ def main():
             action="store_true",
             default=False,
             help="Clean up run job and *data* files after post-run analysis (ONLY summaries and standard output will be kept).")
+    tests_group = parser.add_argument_group("Tests")
+    tests_group.add_argument("--test-speciation-rate-estimation",
+            action="append_const",
+            const="speciation-rate",
+            dest="test_types",
+            help="Build speciation rate estimation test jobs given true species partiton.",)
+    tests_group.add_argument("--test-species-partition-joint-probabilities",
+            action="append_const",
+            const="species-partition-joint-probabilities",
+            dest="test_types",
+            help="Build species partition probabilities estimation test jobs.",)
+    tests_group.add_argument("--test-species-partition-marginal-probabilities",
+            action="append_const",
+            const="species-partition-marginal-probabilities",
+            dest="test_types",
+            help="Build species partition marginal probabilities estimation test jobs.",)
 
     regime_group = parser.add_argument_group("Regime")
     regime_group.add_argument("--max-time",
@@ -180,10 +177,6 @@ def main():
             default=False,
             help="True speciation completion rate will be provided to partition probability calculator.")
     args = parser.parse_args()
-    if args.test_type is None:
-        sys.exit("Must specify test type: {}".format(test_types_desc))
-    elif args.test_type not in test_types:
-        sys.exit("Unrecognized test type: '{}'".format(args.test_type))
     command_kwargs = {}
     if args.check_mode:
         true_sp_rates = (0.01,)
@@ -195,19 +188,15 @@ def main():
         #     true_sp_rates = rate_sweep_2
         # else:
         #     raise ValueError("Must specify rate sweep")
-        if args.test_type == speciation_completion_rate_test_type:
-            # true_sp_rates = [0.001, 0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.12]
-            true_sp_rates = [0.001, 0.002, 0.004, 0.008, 0.01, 0.02, 0.04, 0.08, 0.100]
-        else:
-            true_sp_rates = rate_sweep_2
+        true_sp_rates = rate_sweep_2
     if args.cluster is None:
         sys.exit("Need to specify cluster: '--cluster'")
+    elif args.cluster == "mesxuuyan":
+        preamble = mesxuuyan_preamble
     elif args.cluster == "flux":
         preamble = flux_preamble.format(mem=args.mem)
     elif args.cluster == "kuhpc":
         preamble = kuhpc_preamble
-    elif args.cluster == "mesxuuyan":
-        preamble = mesxuuyan_preamble
     else:
         raise ValueError(args.cluster)
     selected_condition = None
@@ -265,7 +254,7 @@ def main():
                 # make sure that the tree we generate has enough species
                 lineage_tree, orthospecies_tree = psm.generate_sample(**command_kwargs)
                 if len(orthospecies_tree.taxon_namespace) >= args.min_extant_orthospecies:
-                    if args.test_type in partition_test_types:
+                    if not args.test_types or ("species-partition-joint-probabilities" in args.test_types) or ("species-partition-marginal-probabilities" in args.test_types):
                         ok = []
                         if args.min_unconstrained_leaves:
                             if len(lineage_tree.taxon_namespace) >= args.min_unconstrained_leaves:
@@ -304,13 +293,7 @@ def main():
             config = collections.OrderedDict()
             # for speciation rate estimation; ignored by species partition estimation
             # for species partition estimation
-            species_leafset_constraints = None
-            if args.test_type == speciation_completion_rate_test_type:
-                config["species_leafset_constraints"] = true_species_leafsets
-                true_constrained_lineage_leaf_labels = true_species_leafsets
-                true_unconstrained_lineage_leaf_labels = []
-                species_leafset_constraint_label_map = {}
-            elif args.test_type in partition_test_types:
+            if not args.test_types or ("species-partition-joint-probabilities" in args.test_types) or ("species-partition-marginal-probabilities" in args.test_types):
                 if args.constrain_partitions is not None:
                     if args.constrain_partitions == "topological":
                         lineage_tree_internal_nodes = [lnd for lnd in lineage_tree.postorder_internal_node_iter() if lnd is not lineage_tree.seed_node]
@@ -371,17 +354,18 @@ def main():
                     true_unconstrained_lineage_leaf_labels = [lineage_tree_leaf_node.taxon.label for lineage_tree_leaf_node in lineage_tree.leaf_node_iter()]
                     species_leafset_constraint_label_map = {}
                     species_leafset_constraints = None
-                if species_leafset_constraints is not None:
-                    # this is actually used by the DELINEATE program
-                    assert args.constrain_partitions is not None
-                    config["species_leafset_constraints"] = species_leafset_constraints
-                else:
-                    assert args.constrain_partitions is None
-                    try:
-                        del config["species_leafset_constraints"]
-                    except KeyError:
-                        pass
-
+            else:
+                species_leafset_constraints = true_species_leafsets
+            if species_leafset_constraints is not None:
+                # this is actually used by the DELINEATE program
+                assert args.constrain_partitions is not None
+                config["species_leafset_constraints"] = species_leafset_constraints
+            else:
+                assert args.constrain_partitions is None
+                try:
+                    del config["species_leafset_constraints"]
+                except KeyError:
+                    pass
 
             # for post analysis assessment (not used by the inference program)
             config["test_info"] = collections.OrderedDict()
@@ -412,19 +396,13 @@ def main():
                     }
             to_clean.append(common_settings["run_config_filepath"])
             to_clean.append(common_settings["tree_filepath"])
-            if args.underflow_protection:
-                underflow_protection = "--underflow-protection"
-            else:
-                underflow_protection = ""
-            if args.test_type == speciation_completion_rate_test_type:
+            if not args.test_types or "speciation-rate" in args.test_types:
                 job_kwargs = dict(common_settings)
                 job_kwargs["results_filepath"] = job_prefix + ".speciation-rate.tsv"
-                job_kwargs["underflow_protection"] = underflow_protection
                 job_commands.append(speciation_rate_estimation_job_template.format(**job_kwargs))
-            elif args.test_type in partition_test_types:
+            if not args.test_types or ("species-partition-joint-probabilities" in args.test_types) or ("species-partition-marginal-probabilities" in args.test_types):
                 job_kwargs = dict(common_settings)
-                job_kwargs["underflow_protection"] = underflow_protection
-                job_kwargs["delineate_results_filepath"] = job_prefix + ".delimitation-results.json"
+                job_kwargs["delineate_results_filepath"] = job_prefix + ".partition-probs.json"
                 to_clean.append(job_kwargs["delineate_results_filepath"])
                 if args.specify_true_speciation_completion_rate:
                     job_kwargs["speciation_completion_rate"] = "--speciation-completion-rate {}".format(true_speciation_completion_rate)
@@ -432,10 +410,10 @@ def main():
                     job_kwargs["speciation_completion_rate"] = ""
                 job_kwargs["post_analysis_performance_assessment_command"] = "python3 {}/evaluate-species-partition-estimation.py".format(SCRIPT_DIR)
                 job_commands.append(species_partition_estimation_job_template.format(**job_kwargs))
-                if args.test_type == joint_partition_prob_test_type:
+                if "species-partition-joint-probabilities" in args.test_types:
                     job_kwargs["joint_performance_assessment_results_filepath"] = job_prefix + ".joint-partition-est-perf.tsv"
                     job_commands.append(species_partition_estimation_joint_probability_analysis_template.format(**job_kwargs))
-                elif args.test_type == marginal_partition_prob_test_type:
+                if "species-partition-marginal-probabilities" in args.test_types:
                     job_kwargs["marginal_performance_assessment_results_filepath"] = job_prefix + ".marginal-partition-est-perf.tsv"
                     job_commands.append(species_partition_estimation_marginal_probability_analysis_template.format(**job_kwargs))
             job_filepath = job_prefix + ".job"

@@ -192,9 +192,9 @@ class Evaluator(object):
         perf_data["total_num_partitions_in_confidence_interval"] = self.estimation_results["num_partitions_in_confidence_interval"]
         perf_data["inferred_partition_num_species"] = len(self.estimation_results["partitions"][0]["species_leafsets"])
         # perf_data["inferred_partition_log_probability"] = self.estimation_results["partitions"][0]["log_probability"]
-        perf_data["inferred_partition_probability"] = self.estimation_results["partitions"][0]["constrained_probability"]
+        perf_data["inferred_partition_probability"] = self.estimation_results["partitions"][0]["probability"]
         # perf_data["inferred_partition_log_probability_given_constraints"] = self.estimation_results["partitions"][0]["log_probability_given_constraints"]
-        perf_data["inferred_partition_probability_given_constraints"] = self.estimation_results["partitions"][0]["constrained_probability"]
+        perf_data["inferred_partition_probability_given_constraints"] = self.estimation_results["partitions"][0]["probability_given_constraints"]
         for partition_idx, partition_info in enumerate(self.estimation_results["partitions"]):
             current_partition = Partition(**partition_info)
             if current_partition.species_leafsets == self.true_partition.species_leafsets:
